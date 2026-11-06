@@ -1,0 +1,6 @@
+#!/bin/sh
+# Rebuild the WordPress upload zip from the plugin files on disk.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+./scripts/build-zip.sh

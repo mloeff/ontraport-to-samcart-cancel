@@ -3,6 +3,8 @@
  * Plugin Name: Ontraport to SamCart Cancel
  * Description: Cancel a SamCart subscription when an Ontraport unsubscribe webhook arrives.
  * Version: 1.0.0
+ * Author: Main Street Web Developer
+ * Author URI: https://mainstreetwebdeveloper.com
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
  */

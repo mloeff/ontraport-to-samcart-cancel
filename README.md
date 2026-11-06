@@ -4,7 +4,7 @@ A small WordPress plugin that receives an unsubscribe automation webhook, verifi
 
 ## Install and configure
 
-1. Copy the `ontraport-to-samcart-cancel` folder into `wp-content/plugins/` (or zip the folder and upload it in WordPress), then activate it.
+1. Upload `dist/ontraport-to-samcart-cancel.zip` with **Plugins → Add New → Upload Plugin**, or copy the `ontraport-to-samcart-cancel` folder into `wp-content/plugins/`, then activate it.
 2. Open **Settings → Ontraport → SamCart**. Enter the Ontraport App ID and API key, and the SamCart API key. Save.
 3. Click **Load Ontraport fields**, select the contact field containing the SamCart subscription ID, and save again. The field must contain a positive numeric SamCart v1 subscription ID. Leave **Suppress SamCart’s cancellation email** off to use SamCart’s normal email behavior.
 4. In the Ontraport automation that runs for the intended unsubscribe form, add **Send to a webhook**. Use **POST**, paste the destination URL shown on the plugin settings page, choose JSON for the Content-Type header, and set POST data to `{"contact_id":"[Contact ID]"}` using Ontraport’s Contact ID merge field picker. Do not add the Ontraport or SamCart API keys to the webhook.
@@ -27,6 +27,17 @@ The plugin reads the subscription ID from Ontraport, never from the incoming web
 - [Ontraport single contact and metadata endpoints](https://api.ontraport.com/doc/)
 - [Ontraport webhook setup](https://ontraport.com/support/Integrations/webhooks)
 - [SamCart API v1 cancellation endpoint](https://developer.samcart.com/v1/)
+
+## Package
+
+Run `./scripts/build-zip.sh` to build the WordPress upload archive. The script reads `Version` from `ontraport-samcart-cancel.php` and writes:
+
+- `dist/ontraport-to-samcart-cancel.zip`
+- `dist/ontraport-to-samcart-cancel-<version>.zip`
+
+The archive contains the plugin folder WordPress expects, with the plugin file and this README. Tests and build scripts stay out of the package. Each version bump leaves the previous versioned zip in `dist/` and replaces the stable zip with the current build.
+
+Run `./scripts/install-hooks.sh` once per clone. After that, every commit rebuilds both archives from the current plugin files.
 
 ## Local verification
 
