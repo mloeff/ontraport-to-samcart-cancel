@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Ontraport to SamCart Cancel
  * Description: Cancel a SamCart subscription when an Ontraport unsubscribe webhook arrives.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Main Street Web Developer
  * Author URI: https://mainstreetwebdeveloper.com
  * Requires PHP: 7.4
@@ -17,6 +17,8 @@ final class OSC_Cancel_Plugin {
     private const SETTINGS = 'osc_cancel_settings';
     private const SECRET = 'osc_cancel_webhook_secret';
     private const LAST_RESULT = 'osc_cancel_last_result';
+    private const LOG = 'osc_cancel_webhook_log';
+    private const LOG_LIMIT = 50;
     private const ROUTE = 'ontraport-samcart/v1/cancel';
 
     public static function boot(): void {
@@ -26,6 +28,7 @@ final class OSC_Cancel_Plugin {
         add_action('admin_init', array(__CLASS__, 'register_settings'));
         add_action('wp_ajax_osc_cancel_fields', array(__CLASS__, 'ajax_fields'));
         add_action('admin_post_osc_cancel_rotate_secret', array(__CLASS__, 'rotate_secret'));
+        add_action('admin_post_osc_cancel_clear_log', array(__CLASS__, 'clear_log'));
     }
 
     public static function ensure_secret(): void {
@@ -116,17 +119,14 @@ final class OSC_Cancel_Plugin {
                 <tr><th scope="row">Header info</th><td><code>Content-Type: application/json</code><p class="description">Choose JSON as the content type in Ontraport.</p></td></tr>
                 <tr><th scope="row">POST data</th><td><code>{"contact_id":"[Contact ID]"}</code><p class="description">Insert Ontraport’s <strong>Contact ID</strong> merge field using its picker. Do not send the SamCart ID; the plugin reads the saved contact field directly from Ontraport.</p></td></tr>
             </table>
-            <p>In Ontraport, send a test webhook from the intended unsubscribe automation after saving all settings. A successful cancellation returns HTTP 200. A valid contact with no subscription ID is skipped with HTTP 200.</p>
+            <p>In Ontraport, send a test webhook from the intended unsubscribe automation after saving all settings. A successful cancellation returns HTTP 200. A valid contact with no subscription ID is skipped with HTTP 200. The webhook log below shows whether the request arrived and which fields were posted.</p>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="osc_cancel_rotate_secret">
                 <?php wp_nonce_field('osc_cancel_rotate_secret'); ?>
                 <?php submit_button('Generate a new webhook URL', 'secondary', 'submit', false); ?>
                 <span class="description">The old URL stops working immediately; update it in Ontraport.</span>
             </form>
-            <?php if (is_array($last) && !empty($last['time'])) : ?>
-                <h2>Last webhook result</h2>
-                <p><?php echo esc_html($last['time'] . ' — ' . $last['message']); ?></p>
-            <?php endif; ?>
+            <?php self::render_log($last); ?>
         </div>
         <script>
         (function () {
@@ -163,6 +163,76 @@ final class OSC_Cancel_Plugin {
             <?php if ($value !== '') : ?><label><input type="checkbox" name="<?php echo esc_attr(self::SETTINGS . '[clear_' . $key . ']'); ?>" value="1"> Clear saved value</label><?php endif; ?>
         </td></tr>
         <?php
+    }
+
+    private static function render_log($last): void {
+        $log = get_option(self::LOG, array());
+        if (!is_array($log)) {
+            $log = array();
+        }
+        $log = array_slice(array_values(array_filter($log, 'is_array')), 0, self::LOG_LIMIT);
+        $token_labels = array('valid' => 'Valid', 'invalid' => 'Invalid', 'missing' => 'Missing');
+        ?>
+        <h2>Webhook log</h2>
+        <p>The <?php echo (int) self::LOG_LIMIT; ?> newest requests to the webhook URL. Reload this page after a test webhook to confirm that Ontraport reached WordPress and to see the posted fields. The webhook token and API keys are not stored.</p>
+        <?php if ($log === array()) : ?>
+            <p>No webhooks received yet.</p>
+            <?php if (is_array($last) && !empty($last['time'])) : ?>
+                <p>Previous result, recorded before the webhook log: <?php echo esc_html($last['time'] . ' — ' . (string) ($last['message'] ?? '')); ?></p>
+            <?php endif; ?>
+        <?php else : ?>
+            <table class="widefat striped">
+                <thead>
+                    <tr>
+                        <th scope="col">Time</th>
+                        <th scope="col">HTTP</th>
+                        <th scope="col">Token</th>
+                        <th scope="col">Contact ID</th>
+                        <th scope="col">Received</th>
+                        <th scope="col">Result</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($log as $entry) : ?>
+                        <tr>
+                            <td><?php echo esc_html((string) ($entry['time'] ?? '')); ?></td>
+                            <td><?php echo esc_html(isset($entry['status']) ? (string) $entry['status'] : ''); ?></td>
+                            <td><?php echo esc_html($token_labels[$entry['token'] ?? ''] ?? ''); ?></td>
+                            <td><?php echo esc_html(($entry['contact_id'] ?? '') !== '' ? (string) $entry['contact_id'] : '(none)'); ?></td>
+                            <td><code style="white-space:pre-wrap;word-break:break-word;"><?php echo esc_html(self::format_received($entry)); ?></code></td>
+                            <td><?php echo esc_html((string) ($entry['message'] ?? '')); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                <input type="hidden" name="action" value="osc_cancel_clear_log">
+                <?php wp_nonce_field('osc_cancel_clear_log'); ?>
+                <?php submit_button('Clear webhook log', 'secondary', 'submit', false, array('onclick' => "return confirm('Clear the webhook log?');")); ?>
+            </form>
+        <?php endif; ?>
+        <?php
+    }
+
+    private static function format_received(array $entry): string {
+        $payload = $entry['payload'] ?? array();
+        if (is_array($payload) && $payload !== array()) {
+            $encoded = wp_json_encode($payload, JSON_PRETTY_PRINT);
+            return is_string($encoded) ? $encoded : '(unreadable body)';
+        }
+        $raw = isset($entry['raw']) && is_string($entry['raw']) ? $entry['raw'] : '';
+        return $raw !== '' ? $raw : '(empty body)';
+    }
+
+    public static function clear_log(): void {
+        if (!current_user_can('manage_options')) {
+            wp_die('Forbidden', '', array('response' => 403));
+        }
+        check_admin_referer('osc_cancel_clear_log');
+        delete_option(self::LOG);
+        delete_option(self::LAST_RESULT);
+        wp_safe_redirect(admin_url('options-general.php?page=osc-cancel'));
+        exit;
     }
 
     public static function rotate_secret(): void {
@@ -204,34 +274,36 @@ final class OSC_Cancel_Plugin {
 
     public static function handle_webhook($request) {
         $secret = (string) get_option(self::SECRET, '');
-        $token = $request->get_query_params()['token'] ?? '';
+        $params = $request->get_query_params();
+        $token = is_array($params) ? ($params['token'] ?? '') : '';
         $provided = is_string($token) ? $token : '';
+        $received = self::received_snapshot($request, $secret, $provided);
         if ($secret === '' || !hash_equals($secret, $provided)) {
-            return new WP_REST_Response(array('message' => 'Unauthorized.'), 401);
+            return self::result('Unauthorized.', 401, $received, $provided === '' ? 'missing' : 'invalid');
         }
         $s = self::settings();
         if ($s['ontraport_app_id'] === '' || $s['ontraport_api_key'] === '' || $s['samcart_api_key'] === '' || $s['subscription_field'] === '') {
-            return self::result('Plugin setup is incomplete.', 503);
+            return self::result('Plugin setup is incomplete.', 503, $received, 'valid');
         }
         $id = self::positive_id($request->get_param('contact_id'));
         if ($id === '') {
-            return self::result('A valid contact_id is required.', 400);
+            return self::result('A valid contact_id is required.', 400, $received, 'valid');
         }
         $contact = self::lookup_contact($id, $s);
         if (is_wp_error($contact)) {
-            return self::result($contact->get_error_message(), $contact->get_error_code() === 'missing_contact' ? 404 : 502);
+            return self::result($contact->get_error_message(), $contact->get_error_code() === 'missing_contact' ? 404 : 502, $received, 'valid');
         }
         $raw_subscription = $contact[$s['subscription_field']] ?? null;
         if ($raw_subscription === null || $raw_subscription === '') {
-            return self::result('Contact verified; no valid SamCart subscription ID in the selected field. No cancellation sent.', 200);
+            return self::result('Contact verified; no valid SamCart subscription ID in the selected field. No cancellation sent.', 200, $received, 'valid');
         }
         $subscription = self::positive_id($raw_subscription);
         if ($subscription === '') {
-            return self::result('The selected Ontraport field is not a valid numeric SamCart subscription ID.', 422);
+            return self::result('The selected Ontraport field is not a valid numeric SamCart subscription ID.', 422, $received, 'valid');
         }
         $cache_key = 'osc_done_' . md5($s['samcart_api_key'] . ':' . $id . ':' . $subscription);
         if (get_transient($cache_key)) {
-            return self::result('Subscription cancellation was already processed recently.', 200);
+            return self::result('Subscription cancellation was already processed recently.', 200, $received, 'valid');
         }
         $response = wp_remote_post('https://api.samcart.com/v1/subscriptions/' . rawurlencode($subscription) . '/cancel', array(
             'timeout' => 20,
@@ -244,20 +316,108 @@ final class OSC_Cancel_Plugin {
             'body' => wp_json_encode(array('silent_cancel' => $s['silent_cancel'] === '1')),
         ));
         if (is_wp_error($response)) {
-            return self::result('SamCart request failed; retry the webhook.', 502);
+            return self::result('SamCart request failed; retry the webhook.', 502, $received, 'valid');
         }
         $status = (int) wp_remote_retrieve_response_code($response);
         if ($status === 200) {
             set_transient($cache_key, 1, 7 * DAY_IN_SECONDS);
-            return self::result('SamCart subscription canceled.', 200);
+            return self::result('SamCart subscription canceled.', 200, $received, 'valid');
         }
         if ($status === 404) {
-            return self::result('SamCart subscription was not found; check the selected field.', 422);
+            return self::result('SamCart subscription was not found; check the selected field.', 422, $received, 'valid');
         }
         if ($status === 409) {
-            return self::result('SamCart cannot cancel this subscription in its current status.', 409);
+            return self::result('SamCart cannot cancel this subscription in its current status.', 409, $received, 'valid');
         }
-        return self::result('SamCart rejected the cancellation (HTTP ' . $status . ').', 502);
+        return self::result('SamCart rejected the cancellation (HTTP ' . $status . ').', 502, $received, 'valid');
+    }
+
+    private static function received_snapshot($request, string $secret, string $provided): array {
+        $payload = array();
+        if (is_object($request) && method_exists($request, 'get_json_params')) {
+            $json = $request->get_json_params();
+            if (is_array($json)) {
+                $payload = $json;
+            }
+        }
+        if ($payload === array() && is_object($request) && method_exists($request, 'get_body_params')) {
+            $form = $request->get_body_params();
+            if (is_array($form)) {
+                $payload = $form;
+            }
+        }
+        $raw = '';
+        if (is_object($request) && method_exists($request, 'get_body')) {
+            $body = $request->get_body();
+            if (is_string($body)) {
+                $raw = $body;
+            }
+        }
+        if ($payload === array() && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $payload = $decoded;
+            }
+        }
+        $contact = '';
+        if (isset($payload['contact_id']) && is_scalar($payload['contact_id'])) {
+            $contact = (string) $payload['contact_id'];
+        } elseif (is_object($request) && method_exists($request, 'get_param')) {
+            $value = $request->get_param('contact_id');
+            if (is_scalar($value)) {
+                $contact = (string) $value;
+            }
+        }
+        $payload = self::sanitize_payload($payload, $secret, $provided);
+        $raw = $payload === array() ? self::clip(self::redact_text($raw, $secret, $provided), 500) : '';
+        return array(
+            'contact_id' => self::clip(self::redact_text(trim($contact), $secret, $provided), 64),
+            'payload' => $payload,
+            'raw' => $raw,
+        );
+    }
+
+    private static function sanitize_payload($value, string $secret, string $provided, int $depth = 0): array {
+        if (!is_array($value) || $depth > 3) {
+            return array();
+        }
+        $clean = array();
+        foreach ($value as $key => $item) {
+            if (count($clean) >= 20) {
+                break;
+            }
+            $name = self::clip(self::redact_text(is_string($key) ? $key : (string) $key, $secret, $provided), 80);
+            if (preg_match('/token|secret|password|api[_-]?key|authorization/i', $name)) {
+                $clean[$name] = '[redacted]';
+                continue;
+            }
+            if (is_array($item)) {
+                $clean[$name] = self::sanitize_payload($item, $secret, $provided, $depth + 1);
+            } elseif (is_scalar($item) || $item === null) {
+                $clean[$name] = self::clip(self::redact_text(trim((string) $item), $secret, $provided), 200);
+            }
+        }
+        return $clean;
+    }
+
+    private static function redact_text(string $text, string $secret, string $provided): string {
+        $text = preg_replace("/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/", '', $text);
+        if (!is_string($text)) {
+            return '';
+        }
+        foreach (array($secret, $provided) as $hidden) {
+            if ($hidden !== '') {
+                $text = str_replace($hidden, '[redacted]', $text);
+            }
+        }
+        return $text;
+    }
+
+    private static function clip(string $value, int $limit): string {
+        if (strlen($value) <= $limit) {
+            return $value;
+        }
+        return substr($value, 0, $limit) . '...';
     }
 
     private static function lookup_contact(string $id, array $s) {
@@ -330,8 +490,26 @@ final class OSC_Cancel_Plugin {
         return $fields;
     }
 
-    private static function result(string $message, int $status): WP_REST_Response {
-        update_option(self::LAST_RESULT, array('time' => current_time('mysql'), 'message' => $message), false);
+    private static function result(string $message, int $status, array $received, string $token_state): WP_REST_Response {
+        $entry = array(
+            'time' => current_time('mysql'),
+            'status' => $status,
+            'message' => $message,
+            'token' => $token_state,
+            'contact_id' => (string) ($received['contact_id'] ?? ''),
+            'payload' => is_array($received['payload'] ?? null) ? $received['payload'] : array(),
+            'raw' => is_string($received['raw'] ?? null) ? $received['raw'] : '',
+        );
+        $log = get_option(self::LOG, array());
+        if (!is_array($log)) {
+            $log = array();
+        }
+        array_unshift($log, $entry);
+        if (count($log) > self::LOG_LIMIT) {
+            $log = array_slice($log, 0, self::LOG_LIMIT);
+        }
+        update_option(self::LOG, $log, false);
+        update_option(self::LAST_RESULT, array('time' => $entry['time'], 'message' => $message), false);
         return new WP_REST_Response(array('message' => $message), $status);
     }
 }

@@ -47,10 +47,31 @@ class WP_REST_Response {
     public function __construct($data, $status) { $this->data = $data; $this->status = $status; }
 }
 class Mock_Request {
-    private $token; private $id;
-    public function __construct($token, $id) { $this->token = $token; $this->id = $id; }
+    private $token; private $id; private $json; private $body;
+    public function __construct($token, $id, $json = null, $raw = null) {
+        $this->token = $token;
+        $this->id = $id;
+        $this->json = $json;
+        if ($raw !== null) {
+            $this->body = $raw;
+        } elseif ($json !== null) {
+            $this->body = json_encode($json);
+        } else {
+            $this->body = '';
+        }
+    }
     public function get_query_params() { return array('token' => $this->token); }
-    public function get_param($key) { return $this->id; }
+    public function get_param($key) {
+        if ($key !== 'contact_id') {
+            return null;
+        }
+        if (is_array($this->json) && array_key_exists('contact_id', $this->json)) {
+            return $this->json['contact_id'];
+        }
+        return $this->id;
+    }
+    public function get_json_params() { return is_array($this->json) ? $this->json : null; }
+    public function get_body() { return $this->body; }
 }
 function check($condition, $message) { if (!$condition) throw new RuntimeException($message); }
 
@@ -91,5 +112,30 @@ $method = new ReflectionMethod('OSC_Cancel_Plugin', 'lookup_fields');
 $method->setAccessible(true);
 $fields = $method->invoke(null, $options['osc_cancel_settings']);
 check($fields[1]['key'] === 'f1234' && $fields[1]['label'] === 'SamCart Subscription ID', 'Field picker should use Ontraport metadata aliases');
+
+$log = get_option('osc_cancel_webhook_log', array());
+check(is_array($log) && count($log) === 9, 'Each webhook is logged, including rejected tokens');
+check($log[0]['status'] === 409 && $log[0]['token'] === 'valid', 'Newest log entry is the latest webhook');
+check($log[8]['status'] === 401 && $log[8]['token'] === 'invalid', 'Rejected token is recorded');
+$encoded = json_encode($log);
+check(strpos($encoded, 'secret') === false, 'Webhook token must not be stored');
+check(strpos($encoded, 'samcart-key') === false && strpos($encoded, 'ontraport-key') === false, 'API keys must not be stored');
+
+OSC_Cancel_Plugin::handle_webhook(new Mock_Request('secret', '42', array(
+    'contact_id' => '42', 'api_key' => 'super-secret', 'note' => 'from-ontraport',
+)));
+$log = get_option('osc_cancel_webhook_log', array());
+check($log[0]['contact_id'] === '42' && $log[0]['payload']['note'] === 'from-ontraport', 'Received contact ID and fields are stored');
+check($log[0]['payload']['api_key'] === '[redacted]' && strpos(json_encode($log[0]), 'super-secret') === false, 'Secret-like received fields are redacted');
+
+OSC_Cancel_Plugin::handle_webhook(new Mock_Request('bad', '', null, 'contact_id=[Contact ID]'));
+$log = get_option('osc_cancel_webhook_log', array());
+check($log[0]['status'] === 401 && $log[0]['raw'] === 'contact_id=[Contact ID]' && $log[0]['payload'] === array(), 'Unparsed body is stored when JSON is missing');
+
+for ($i = 0; $i < 60; $i++) {
+    OSC_Cancel_Plugin::handle_webhook(new Mock_Request('', (string) $i));
+}
+$log = get_option('osc_cancel_webhook_log', array());
+check(count($log) === 50 && $log[0]['token'] === 'missing' && $log[0]['contact_id'] === '59', 'Webhook log keeps the latest 50 requests');
 
 echo "All webhook checks passed.\n";
