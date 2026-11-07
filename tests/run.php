@@ -94,9 +94,11 @@ check($response->status === 200 && count($calls) === 3, 'Duplicate must not call
 $contact['id'] = '43'; $contact['f1234'] = '';
 $response = OSC_Cancel_Plugin::handle_webhook(new Mock_Request('secret', '43'));
 check($response->status === 200 && count($calls) === 4, 'Empty subscription should skip SamCart');
+check(strpos($response->data['message'], 'f1234 is empty') !== false && strpos($response->data['message'], 'contact_id') !== false, 'Empty field message names the Ontraport field');
 $contact['id'] = '44'; $contact['f1234'] = 'abc';
 $response = OSC_Cancel_Plugin::handle_webhook(new Mock_Request('secret', '44'));
 check($response->status === 422 && count($calls) === 5, 'Invalid subscription should fail without SamCart call');
+check(strpos($response->data['message'], 'f1234 is "abc"') !== false, 'Invalid field message shows the stored value');
 $contact['id'] = '99'; $contact['f1234'] = '123';
 $response = OSC_Cancel_Plugin::handle_webhook(new Mock_Request('secret', '45'));
 check($response->status === 404 && count($calls) === 6, 'Mismatched contact must be rejected');

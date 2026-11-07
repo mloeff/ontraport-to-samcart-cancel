@@ -7,7 +7,7 @@ A small WordPress plugin that receives an unsubscribe automation webhook, verifi
 1. Upload `dist/ontraport-to-samcart-cancel.zip` with **Plugins → Add New → Upload Plugin**, or copy the `ontraport-to-samcart-cancel` folder into `wp-content/plugins/`, then activate it.
 2. Open **Settings → Ontraport → SamCart**. Enter the Ontraport App ID and API key, and the SamCart API key. Save.
 3. Click **Load Ontraport fields**, select the contact field containing the SamCart subscription ID, and save again. The field must contain a positive numeric SamCart v1 subscription ID. Leave **Suppress SamCart’s cancellation email** off to use SamCart’s normal email behavior.
-4. In the Ontraport automation that runs for the intended unsubscribe form, add **Send to a webhook**. Use **POST**, paste the destination URL shown on the plugin settings page, choose JSON for the Content-Type header, and set POST data to `{"contact_id":"[Contact ID]"}` using Ontraport’s Contact ID merge field picker. Do not add the Ontraport or SamCart API keys to the webhook.
+4. In the Ontraport automation that runs for the intended unsubscribe form, add **Send to a webhook**. Use **POST**, paste the destination URL shown on the plugin settings page, choose JSON for the Content-Type header, and set POST data to `{"contact_id":"[Contact ID]"}` using Ontraport’s Contact ID merge field picker. That body only identifies the contact. The SamCart subscription ID stays in the contact field selected above. Leave API keys out of the webhook.
 5. Test with an appropriate contact in a safe account. Review the HTTP response in Ontraport’s webhook activity log and the **Webhook log** on the plugin settings page. The log lists the newest requests, whether the token was accepted, the contact ID, and the posted fields.
 
 The webhook URL contains a secret token. Treat it as a password. **Generate a new webhook URL** on the settings page if it is exposed, then replace the URL in Ontraport. The WordPress site should use HTTPS. The plugin does not create the Ontraport automation or the contact field for you.
@@ -15,8 +15,8 @@ The webhook URL contains a secret token. Treat it as a password. **Generate a ne
 ## Behavior
 
 - Invalid token: HTTP 401. Invalid contact ID: HTTP 400. Contact not found: HTTP 404.
-- Verified contact with no subscription ID: HTTP 200 and no SamCart call.
-- Verified contact with a nonnumeric subscription ID: HTTP 422 and no SamCart call.
+- Verified contact whose subscription field is empty: HTTP 200 and no SamCart call. The webhook log names that Ontraport field.
+- Verified contact whose subscription field is not a positive number: HTTP 422 and no SamCart call. The log shows the stored value.
 - Successful cancellation: HTTP 200. A repeat webhook for the same contact and subscription is acknowledged without another SamCart call for seven days.
 - Ontraport or SamCart API problems return an error so the webhook can be reviewed or retried. SamCart HTTP 409 means the subscription cannot be canceled in its current status.
 

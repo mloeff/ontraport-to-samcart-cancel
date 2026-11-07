@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Ontraport to SamCart Cancel
  * Description: Cancel a SamCart subscription when an Ontraport unsubscribe webhook arrives.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: Main Street Web Developer
  * Author URI: https://mainstreetwebdeveloper.com
  * Requires PHP: 7.4
@@ -117,7 +117,7 @@ final class OSC_Cancel_Plugin {
                 <tr><th scope="row">Method</th><td><code>POST</code></td></tr>
                 <tr><th scope="row">Destination URL</th><td><input class="large-text code" readonly id="osc-webhook-url" value="<?php echo esc_attr($url); ?>" onclick="this.select()"><p class="description">Keep this URL private. Its token authorizes cancellation requests. Use HTTPS for your WordPress site.</p></td></tr>
                 <tr><th scope="row">Header info</th><td><code>Content-Type: application/json</code><p class="description">Choose JSON as the content type in Ontraport.</p></td></tr>
-                <tr><th scope="row">POST data</th><td><code>{"contact_id":"[Contact ID]"}</code><p class="description">Insert Ontraport’s <strong>Contact ID</strong> merge field using its picker. Do not send the SamCart ID; the plugin reads the saved contact field directly from Ontraport.</p></td></tr>
+                <tr><th scope="row">POST data</th><td><code>{"contact_id":"[Contact ID]"}</code><p class="description">Insert Ontraport’s <strong>Contact ID</strong> merge field using its picker. This request only identifies the contact. The plugin then reads the Subscription ID field selected above. When that field is empty, the log names it and nothing is canceled.</p></td></tr>
             </table>
             <p>In Ontraport, send a test webhook from the intended unsubscribe automation after saving all settings. A successful cancellation returns HTTP 200. A valid contact with no subscription ID is skipped with HTTP 200. The webhook log below shows whether the request arrived and which fields were posted.</p>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
@@ -174,7 +174,7 @@ final class OSC_Cancel_Plugin {
         $token_labels = array('valid' => 'Valid', 'invalid' => 'Invalid', 'missing' => 'Missing');
         ?>
         <h2>Webhook log</h2>
-        <p>The <?php echo (int) self::LOG_LIMIT; ?> newest requests to the webhook URL. Reload this page after a test webhook to confirm that Ontraport reached WordPress and to see the posted fields. The webhook token and API keys are not stored.</p>
+        <p>The <?php echo (int) self::LOG_LIMIT; ?> newest requests. <strong>Received</strong> is the POST body. <strong>Ontraport field</strong> is the subscription value read from that contact afterward. Reload this page after a test webhook. The webhook token and API keys are not stored.</p>
         <?php if ($log === array()) : ?>
             <p>No webhooks received yet.</p>
             <?php if (is_array($last) && !empty($last['time'])) : ?>
@@ -188,6 +188,7 @@ final class OSC_Cancel_Plugin {
                         <th scope="col">HTTP</th>
                         <th scope="col">Token</th>
                         <th scope="col">Contact ID</th>
+                        <th scope="col">Ontraport field</th>
                         <th scope="col">Received</th>
                         <th scope="col">Result</th>
                     </tr>
@@ -199,8 +200,9 @@ final class OSC_Cancel_Plugin {
                             <td><?php echo esc_html(isset($entry['status']) ? (string) $entry['status'] : ''); ?></td>
                             <td><?php echo esc_html($token_labels[$entry['token'] ?? ''] ?? ''); ?></td>
                             <td><?php echo esc_html(($entry['contact_id'] ?? '') !== '' ? (string) $entry['contact_id'] : '(none)'); ?></td>
+                            <td><?php echo esc_html(self::format_field($entry)); ?></td>
                             <td><code style="white-space:pre-wrap;word-break:break-word;"><?php echo esc_html(self::format_received($entry)); ?></code></td>
-                            <td><?php echo esc_html((string) ($entry['message'] ?? '')); ?></td>
+                            <td style="word-break:break-word;"><?php echo esc_html((string) ($entry['message'] ?? '')); ?></td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -212,6 +214,15 @@ final class OSC_Cancel_Plugin {
             </form>
         <?php endif; ?>
         <?php
+    }
+
+    private static function format_field(array $entry): string {
+        $field = isset($entry['field']) && is_string($entry['field']) ? $entry['field'] : '';
+        if ($field === '') {
+            return '—';
+        }
+        $value = isset($entry['field_value']) && is_string($entry['field_value']) ? $entry['field_value'] : '';
+        return $value === '' ? $field : $field . ': ' . $value;
     }
 
     private static function format_received(array $entry): string {
@@ -294,12 +305,14 @@ final class OSC_Cancel_Plugin {
             return self::result($contact->get_error_message(), $contact->get_error_code() === 'missing_contact' ? 404 : 502, $received, 'valid');
         }
         $raw_subscription = $contact[$s['subscription_field']] ?? null;
-        if ($raw_subscription === null || $raw_subscription === '') {
-            return self::result('Contact verified; no valid SamCart subscription ID in the selected field. No cancellation sent.', 200, $received, 'valid');
+        $received['field'] = $s['subscription_field'];
+        $received['field_value'] = self::display_field_value($raw_subscription);
+        if (!is_scalar($raw_subscription) || trim((string) $raw_subscription) === '') {
+            return self::result('Ontraport contact ' . $id . ' was found, but ' . $s['subscription_field'] . ' is empty. Put the SamCart subscription ID in that contact field. The webhook POST data only sends contact_id, so nothing was canceled.', 200, $received, 'valid');
         }
         $subscription = self::positive_id($raw_subscription);
         if ($subscription === '') {
-            return self::result('The selected Ontraport field is not a valid numeric SamCart subscription ID.', 422, $received, 'valid');
+            return self::result('Ontraport contact ' . $id . ' was found, but ' . $s['subscription_field'] . ' is "' . $received['field_value'] . '", which is not a positive numeric SamCart subscription ID. Nothing was canceled.', 422, $received, 'valid');
         }
         $cache_key = 'osc_done_' . md5($s['samcart_api_key'] . ':' . $id . ':' . $subscription);
         if (get_transient($cache_key)) {
@@ -413,6 +426,14 @@ final class OSC_Cancel_Plugin {
         return $text;
     }
 
+    private static function display_field_value($value): string {
+        if (!is_scalar($value)) {
+            return '(not text)';
+        }
+        $text = trim((string) $value);
+        return $text === '' ? '(empty)' : self::clip($text, 80);
+    }
+
     private static function clip(string $value, int $limit): string {
         if (strlen($value) <= $limit) {
             return $value;
@@ -497,6 +518,8 @@ final class OSC_Cancel_Plugin {
             'message' => $message,
             'token' => $token_state,
             'contact_id' => (string) ($received['contact_id'] ?? ''),
+            'field' => (string) ($received['field'] ?? ''),
+            'field_value' => (string) ($received['field_value'] ?? ''),
             'payload' => is_array($received['payload'] ?? null) ? $received['payload'] : array(),
             'raw' => is_string($received['raw'] ?? null) ? $received['raw'] : '',
         );
